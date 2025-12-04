@@ -2,10 +2,10 @@
 
 
 #load("O:/Public/4233-110918-FLOW-persondata/Temp/model_RE_full_inc_prichar.RData")
-estimate_csv <- read.csv2("O:/Public/4233-110918-FLOW-persondata/WTP/Filer til WTP beregning/BasisModel 12-11/Flow_RE_full_estimates",
+estimate_csv <- read.csv2("O:/Public/4233-110918-FLOW-persondata/WTP/Filer til WTP beregning/modeller 27_11_2025/Flow_RE_full_se_v3/Flow_RE_full_se_v3_estimates",
                           sep=";")
 estimate_vec <- setNames(as.numeric(estimate_csv$model.estimate), estimate_csv$X)
-robvarcov_mat <- read.csv2("O:/Public/4233-110918-FLOW-persondata/WTP/Filer til WTP beregning/BasisModel 12-11/Flow_RE_full_robcovvar",
+robvarcov_mat <- read.csv2("O:/Public/4233-110918-FLOW-persondata/WTP/Filer til WTP beregning/modeller 27_11_2025/Flow_RE_full_se_v3/Flow_RE_full_se_v3_robcovvar",
                            sep=";", row.names = 1) |> as.matrix()
 
 library(openxlsx)
@@ -17,13 +17,17 @@ library(foreach)
 R <- 200
 K <- 2
 
-alpha_name <- c("mu_sma", "sigma_sma", "asc_sma_not_dk", "asc_prichar_sma") #all coef on the numerator of WTP (including random, correlation and interactions coefficients)
+alpha_name <- c("mu_min", "sigma_min", "mu_min_fem", "mu_min_age1", "mu_min_it", "mu_min_prichar") #all coef on the numerator of WTP (including random, correlation and interactions coefficients)
 beta_name <- "b_pprice"
 
-database$not_dk <- database$Spain + database$Czech + database$Italy + database$Germany + database$Ireland
-interaction_alpha <- list("asc_sma_not_dk" = "not_dk",
-                          "asc_prichar_sma" = "HomeCharge")
-random_coef_alpha <- list("mu_sma" = c("sigma_sma")) # "mean" = c("sandard deviation coef", "correlation coef"), leave out correlation if not relevant
+colnames(database)
+interaction_alpha <- list(
+  "mu_min_fem" = "Kvinde",
+  "mu_min_age1" = "age1",
+  "mu_min_it" = "Italy",
+  "mu_min_prichar" = "HomeChargAvail"
+  )
+random_coef_alpha <- list("mu_min" = c("sigma_min")) # "mean" = c("sandard deviation coef", "correlation coef"), leave out correlation if not relevant
 
 estimated_coef <- estimate_csv[-which(estimate_csv[,2] == 0),2]
 estimated_Sigma <- robvarcov_mat
@@ -36,7 +40,7 @@ WTP <- function(alpha_name, #all parameters to be included in the numerator of W
                 estimated_Sigma = model$robvarcov, #(robust) covariance matrix
                 database = database,
                 R,
-                K,
+                K
 ) {
   
   draws <- MASS::mvrnorm(n = R,
@@ -45,24 +49,18 @@ WTP <- function(alpha_name, #all parameters to be included in the numerator of W
   alpha_beta_drawn <- draws[,which(colnames(draws) %in% c(alpha_name,beta_name))]
   
   if (!is.null(random_coef_alpha)) {#if there are any random coefficients
-    # Set up parallel backend
-    cl <- makeCluster(detectCores() - 1) #number of CPU cores used 
-    registerDoParallel(cl)
-    
-    alpha_beta_drawn_boot <- foreach(k = 1:R, .combine = rbind) %dopar% {
-      temp_matrix <- matrix(NA, nrow = K, ncol = length(random_coef_alpha)) #Matrix to store matrix during paralell runs
+    alpha_beta_drawn_boot <- matrix(NA, nrow = K, ncol = length(random_coef_alpha)) #Matrix to store matrix during paralell runs
+    for(k in 1:R) {
       for (i in 1:length(random_coef_alpha)) {# if there are multiple random coefficients, loop one at a time
         mean_rand_coef <- alpha_beta_drawn[k, which(colnames(alpha_beta_drawn) == names(random_coef_alpha)[i])] #
         sigma_rand_coef <- alpha_beta_drawn[k, which(colnames(alpha_beta_drawn) == random_coef_alpha[[i]][1])]
         if (length(random_coef_alpha[[i]]) != 1) { # checking for correlation coefficent (rho)
           sigma_rand_coef <- sigma_rand_coef + alpha_beta_drawn[k,which(colnames(alpha_beta_drawn) == random_coef_alpha[[i]][2])]
         }
-        temp_matrix[, i] <- rnorm(n = K, mean_rand_coef, abs(sigma_rand_coef)) #rnrom(n_draws, mean, sd)
+        alpha_beta_drawn_boot[k, i] <- rnorm(n = K, mean_rand_coef, abs(sigma_rand_coef)) #rnrom(n_draws, mean, sd)
       }
-      temp_matrix
     }
     
-    stopCluster(cl) #stop parallel backend
     alpha_beta_drawn_boot <- as.matrix(alpha_beta_drawn_boot)
     names(alpha_beta_drawn_boot) <- paste0(names(random_coef_alpha), "_random_coef_draws")
   }
@@ -92,25 +90,27 @@ WTP <- function(alpha_name, #all parameters to be included in the numerator of W
   beta_idx <- match(beta_name, colnames(alpha_beta_drawn_rep))
   
   
-  cl <- makeCluster(detectCores() - 4)
-  registerDoParallel(cl)
-  #Calculate alpha for each individual (considering interactions terms)
-  result <- foreach(i = 1:nrow(database_indiv_inter), .combine = rbind) %dopar% {
+  wtp_matrix <- matrix(NA, nrow = nrow(database_indiv_inter), ncol = nrow(alpha_beta_drawn_rep))
+  for (i in seq_len(nrow(database_indiv_inter))) {
     x_i <- as.numeric(database_indiv_inter[i, ])
-    wtp_i <- matrix(NA, nrow = nrow(alpha_beta_drawn_rep), ncol = 1)
+    wtp_i <- numeric(nrow(alpha_beta_drawn_rep))
     
     for (j in seq_len(nrow(alpha_beta_drawn_rep))) {
-      alpha <- sum(alpha_beta_drawn_rep[j, interaction_idx] * x_i) +
+      
+      alpha <- 
+        sum(alpha_beta_drawn_rep[j, interaction_idx] * x_i) +
         sum(alpha_beta_drawn_rep[j, random_coef_idx]) +
         sum(alpha_beta_drawn_rep[j, non_interaction_idx])
+      
       beta <- alpha_beta_drawn_rep[j, beta_idx]
+      
       wtp_i[j] <- alpha / beta
     }
     
-    wtp_i
+    wtp_matrix[i, ] <- wtp_i
   }
-  stopCluster(cl)
-  wtp_dist_pos <- as.numeric(rowSums(result))
+  
+  wtp_dist_pos <- as.numeric(rowSums(wtp_matrix))
   wtp_dist <- wtp_dist_pos
   list(
     wtp_dist = wtp_dist,
