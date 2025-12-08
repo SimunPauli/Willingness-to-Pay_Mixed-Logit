@@ -87,27 +87,48 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
   draws <- MASS::mvrnorm(n = R,
                          mu = estimated_coef, 
                          Sigma = estimated_Sigma)
-  alpha_beta_drawn <- draws[,match(c(alpha_name, beta_name),colnames(draws))]
   
-  if (!is.null(random_alpha_normal)) {#if there are any random coefficients
-    alpha_beta_drawn_boot <- matrix(NA, nrow = K*R, ncol = length(random_alpha_normal)) #Matrix to store matrix during paralell runs
-    j <- 1
-    for(k in 1:R) {
-      for (i in 1:length(random_alpha_normal)) {# if there are multiple random coefficients, loop one at a time
-        mean_rand_coef <- alpha_beta_drawn[k, which(colnames(alpha_beta_drawn) == names(random_alpha_normal)[i])] #
-        sigma_rand_coef <- alpha_beta_drawn[k, which(colnames(alpha_beta_drawn) == random_alpha_normal[[i]][1])]
-        #if (length(random_alpha_normal[[i]]) != 1) { # checking for correlation coefficent (rho)
-        #  sigma_rand_coef <- sigma_rand_coef + alpha_beta_drawn[k,which(colnames(alpha_beta_drawn) == random_alpha_normal[[i]][2])]
-        #}
-        alpha_beta_drawn_boot[j:(j+K-1), i] <- rnorm(n = K, mean_rand_coef, abs(sigma_rand_coef)) #rnrom(n_draws, mean, sd)
+  if (!is.null(random_alpha_normal)) {
+    draws_exp <- draws[rep(seq_len(R), each = K), , drop = FALSE] # (R*K) x p 
+    n_draws <- R * K
+    # for each named random alpha, replace the mean value in draws_exp by rnorm using sd = sigma parameter
+    for (param_name in names(random_alpha_normal)) {
+      sigma_name <- random_alpha_normal[[param_name]][1] # first element is sigma name
+      if (!sigma_name %in% colnames(draws_exp)) stop(paste0("sigma '", sigma_name, "' not found in estimated coefficients/draws."))
+      # per-row sd should be the repeated sigma draws from draws_exp
+      sd_vec <- draws_exp[, sigma_name]
+      mean_vec <- draws_exp[, param_name]
+      if (length(random_alpha_normal[[param_name]]) == 2) { # checking for correlation coefficent (rho)
+        rho_name <- random_alpha_normal[[param_name]][2]
+        sd_vec <- sd_vec + draws_exp[, rho_name]
       }
-      j <- j + K
+      # sample individual-level random coefficients
+      new_vals <- rnorm(n = n_draws, mean = mean_vec, sd = abs(sd_vec))
+      draws_exp[, param_name] <- new_vals
     }
-    
-    colnames(alpha_beta_drawn_boot) <- paste0(names(random_alpha_normal), "_random_coef_draws")
+    draws <- draws_exp
   }
-  alpha_beta_drawn_rep <- alpha_beta_drawn[rep(seq_len(R), each = K), , drop = FALSE]
-  alpha_beta_drawn_rep <- cbind(alpha_beta_drawn_rep, alpha_beta_drawn_boot)
+  
+  if (!is.null(random_alpha_normal)) {
+    draws_exp <- draws[rep(seq_len(R), each = K), , drop = FALSE] # (R*K) x p 
+    n_draws <- R * K
+    # for each named random alpha, replace the mean value in draws_exp by rnorm using sd = sigma parameter
+    for (param_name in names(random_alpha_normal)) {
+      sigma_name <- random_alpha_normal[[param_name]][1] # first element is sigma name
+      if (!sigma_name %in% colnames(draws_exp)) stop(paste0("sigma '", sigma_name, "' not found in estimated coefficients/draws."))
+      # per-row sd should be the repeated sigma draws from draws_exp
+      sd_vec <- draws_exp[, sigma_name]
+      mean_vec <- draws_exp[, param_name]
+      if (length(random_alpha_normal[[param_name]]) == 2) { # checking for correlation coefficent (rho)
+        rho_name <- random_alpha_normal[[param_name]][2]
+        sd_vec <- sd_vec + draws_exp[, rho_name]
+      }
+      # sample individual-level random coefficients
+      new_vals <- rnorm(n = n_draws, mean = mean_vec, sd = abs(sd_vec))
+      draws_exp[, param_name] <- new_vals
+    }
+    draffws <- draws_exp
+  }
   
   # Convert to matrix for faster access
   database_indiv_inter <- database[ #database on individual level and 
@@ -117,23 +138,11 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
     as.matrix()
   
   # Precompute column indices
-  beta_idx <- match(beta_name, colnames(alpha_beta_drawn_rep))
+  beta_idx <- match(beta_name, colnames(draws))
   
-  interaction_cols <- names(interaction_alpha)
-  interaction_idx <- match(interaction_cols, colnames(alpha_beta_drawn_rep))
-  random_coef_idx <- grep("_random_coef_draws$", colnames(alpha_beta_drawn_rep))
-  non_interaction_idx <- setdiff(
-    seq_len(ncol(alpha_beta_drawn_rep)),
-    c( #idx in this vector not to be included in non_interaction_idx
-      random_coef_idx,
-      match(
-        c(names(random_alpha_normal), unlist(random_alpha_normal)), 
-        colnames(alpha_beta_drawn_rep)
-        ), #These are replaced by _random_coef_draws$
-      interaction_idx,
-      beta_idx
-    )
-  )
+  interaction_idx <- match(names(interaction_alpha), colnames(draws))
+  random_coef_idx <- match(names(random_alpha_normal), colnames(draws))
+  non_interaction_idx <- setdiff(alpha_name, c(names(interaction_alpha), names(random_alpha_normal)))
   
   
   wtp_matrix <- matrix(NA, nrow = nrow(database_indiv_inter), ncol = R*K)
@@ -141,17 +150,17 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
   beta_matrix <- matrix(NA, nrow = nrow(database_indiv_inter), ncol = R*K)
   for (i in 1:nrow(database_indiv_inter)) {
     x_i <- as.numeric(database_indiv_inter[i, ])
-    wtp_i <- numeric(nrow(alpha_beta_drawn_rep))
-    alpha_i <- numeric(nrow(alpha_beta_drawn_rep))
-    beta_i <- numeric(nrow(alpha_beta_drawn_rep))
+    wtp_i <- numeric(nrow(draws))
+    alpha_i <- numeric(nrow(draws))
+    beta_i <- numeric(nrow(draws))
     
     for (j in 1:(R*K)) {
       alpha <- 
-        sum(alpha_beta_drawn_rep[j, random_coef_idx]) +
-        sum(alpha_beta_drawn_rep[j, interaction_idx] * x_i) + #if interaction_idx is integer(0) this equal 0: sum(numeric(0)) -> 0
-        sum(alpha_beta_drawn_rep[j, non_interaction_idx]) #if non_interaction_idx is integer(0) this equal 0: sum(numeric(0)) -> 0
+        sum(draws[j, random_coef_idx]) +
+        sum(draws[j, interaction_idx] * x_i) + #if interaction_idx is integer(0) this equal 0: sum(numeric(0)) -> 0
+        sum(draws[j, non_interaction_idx]) #if non_interaction_idx is integer(0) this equal 0: sum(numeric(0)) -> 0
       
-      beta <- alpha_beta_drawn_rep[j, beta_idx]
+      beta <- draws[j, beta_idx]
       
       wtp_i[j] <- - alpha / beta # negative
       alpha_i[j] <- alpha
@@ -176,20 +185,29 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
  
 
 
-wtp <- apollo_WTP(alpha_name = c("mu_min", "sigma_min", "mu_min_fem", "mu_min_age1", "mu_min_it", "mu_min_prichar"), #all parameters to be included in the numerator of WTP
-    beta_name = "b_pprice", #all parameters to be included in the denominator of WTP
-    random_alpha_normal = list("mu_min" = c("sigma_min")), #list of parameters with random coefficients (relevant for this WTP) and their respective random effects: list("beta1" = c("beta1_sigam","beta1_rho"),...)
-    interaction_alpha = list(
-      "mu_min_fem" = "Kvinde",
-      "mu_min_age1" = "age1",
-      "mu_min_it" = "Italy",
-      "mu_min_prichar" = "HomeChargAvail"
-      ), #list of parameters with interactions (relevant for this WTP) and their respective attribute: list("beta_inter1" = "inter1")
-    estimated_coef = estimated_vec, #all coefficients in the model. Should not included coefficient set to 0
-    estimated_Sigma = robvarcov_mat, #(robust) covariance matrix
-    database = database,
-    R = 500,
-    K = 10
+wtp <- apollo_WTP(
+  alpha_name = c("mu_min", "sigma_min", "mu_min_fem", "mu_min_age1", "mu_min_it", "mu_min_prichar"), #all parameters to be included in the numerator of WTP
+  random_alpha_normal = list("mu_min" = c("sigma_min")), #list of parameters with random coefficients (relevant for this WTP) and their respective random effects: list("beta1" = c("beta1_sigam","beta1_rho"),...)
+  interaction_alpha = list(
+    "mu_min_fem" = "Kvinde",
+    "mu_min_age1" = "age1",
+    "mu_min_it" = "Italy",
+    "mu_min_prichar" = "HomeChargAvail"
+  ), #list of parameters with interactions (relevant for this WTP) and their respective attribute: list("beta_inter1" = "inter1")
+  
+  beta_name = c("b_pprice","l_pprice", "b_pprice_miss", "b_pp_cz", "l_pprice_cz_de", "b_pp_ei"), #all parameters to be included in the denominator of WTP
+  random_beta_normal = list(
+    "b_pprice" = c("sigma_pp")
+  ),
+  interaction_beta = list(
+    
+  )
+  
+  estimated_coef = estimated_vec, #all coefficients in the model. Should not included coefficient set to 0
+  estimated_Sigma = robvarcov_mat, #(robust) covariance matrix
+  database = database,
+  R = 500,
+  K = 10
 )
 
 wtp$wtp_mean
