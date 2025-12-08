@@ -41,19 +41,29 @@ database$age4 = 1*(database$age > 65)
 database$edu1 = 1*(database$edu < 4)
 database$edu2 = 1*(database$edu == 4)
 database$edu3 = 1*(database$edu > 4)
+
+
+database$Income_std_cz_de <-  database$Income_std*(database$Germany + database$Czech)
+
 library(MASS)
 library(doParallel)
 library(foreach)
 
 #############################################
 apollo_WTP <- function(alpha_name, #all parameters to be included in the numerator of WTP
-                beta_name, #all parameters to be included in the denominator of WTP
                 random_alpha_normal = NULL, #list of parameters with random coefficients (relevant for this WTP) and their respective random effects: list("beta1" = c("beta1_sigam","beta1_rho"),...)
                 interaction_alpha = NULL, #list of parameters with interactions (relevant for this WTP) and their respective attribute: list("beta_inter1" = "inter1")
+                
+                beta_name, #all parameters to be included in the denominator of WTP
+                random_beta_normal = NULL,
+                interaction_beta = NULL,
+                
+                draw_transformation = NULL,
+                
                 estimated_coef = model$estimate[-which(names(model$estimate) %in% apollo_fixed)], #all coefficients in the model. Should not included coefficient set to 0
                 estimated_Sigma = model$robvarcov, #(robust) covariance matrix
                 database = database,
-                R = NULL,
+                R,
                 K = NULL
 ) {
   
@@ -82,14 +92,17 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
     sigma_names <- unlist(random_alpha_normal)
     if (!all(sigma_names %in% names(estimated_coef))) stop("Some sigma parameter names referenced in random_alpha_normal are not in estimated_coef.")
   }
+  if(!is.numeric(K) & ((!is.null(random_alpha_normal)) | (!is.null(random_beta_normal))) ) stop("K needs to be numeric if WTP included random coefficient.")
   
   #### 2. Draw R multivariate normal draws for fixed (mean) coefficients ####
   draws <- MASS::mvrnorm(n = R,
                          mu = estimated_coef, 
                          Sigma = estimated_Sigma)
   
+  if(!is.null(K)) draws_exp <- draws[rep(seq_len(R), each = K), , drop = FALSE] # (R*K) x p 
+  
+  #extra draws for random coefficient for alpha
   if (!is.null(random_alpha_normal)) {
-    draws_exp <- draws[rep(seq_len(R), each = K), , drop = FALSE] # (R*K) x p 
     n_draws <- R * K
     # for each named random alpha, replace the mean value in draws_exp by rnorm using sd = sigma parameter
     for (param_name in names(random_alpha_normal)) {
@@ -109,26 +122,34 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
     draws <- draws_exp
   }
   
-  if (!is.null(random_alpha_normal)) {
-    draws_exp <- draws[rep(seq_len(R), each = K), , drop = FALSE] # (R*K) x p 
+  #extra draws for random coefficient for beta
+  if (!is.null(random_beta_normal)) {
     n_draws <- R * K
-    # for each named random alpha, replace the mean value in draws_exp by rnorm using sd = sigma parameter
-    for (param_name in names(random_alpha_normal)) {
-      sigma_name <- random_alpha_normal[[param_name]][1] # first element is sigma name
+    for (param_name in names(random_beta_normal)) {
+      sigma_name <- random_beta_normal[[param_name]][1] # first element is sigma name
       if (!sigma_name %in% colnames(draws_exp)) stop(paste0("sigma '", sigma_name, "' not found in estimated coefficients/draws."))
-      # per-row sd should be the repeated sigma draws from draws_exp
       sd_vec <- draws_exp[, sigma_name]
       mean_vec <- draws_exp[, param_name]
-      if (length(random_alpha_normal[[param_name]]) == 2) { # checking for correlation coefficent (rho)
-        rho_name <- random_alpha_normal[[param_name]][2]
+      if (length(random_beta_normal[[param_name]]) == 2) { # checking for correlation coefficent (rho)
+        rho_name <- random_beta_normal[[param_name]][2]
         sd_vec <- sd_vec + draws_exp[, rho_name]
       }
-      # sample individual-level random coefficients
       new_vals <- rnorm(n = n_draws, mean = mean_vec, sd = abs(sd_vec))
       draws_exp[, param_name] <- new_vals
     }
-    draffws <- draws_exp
+    draws <- draws_exp
   }
+  
+  if(!is.null(draw_transformation)) {
+    for(i in 1:length(draw_transformation)) {
+      trans_fun <- get(name(draw_transformation)[i])
+      for(j in 1:length(draw_transformation[[j]])) {
+        param_name <- draw_transformation[[j]][i]
+        draws[, param_name] <- trans_fun(draws[, param_name])
+      }
+    }
+  }
+  
   
   # Convert to matrix for faster access
   database_indiv_inter <- database[ #database on individual level and 
@@ -200,8 +221,16 @@ wtp <- apollo_WTP(
     "b_pprice" = c("sigma_pp")
   ),
   interaction_beta = list(
-    
-  )
+    "l_pprice" = "Income_std",
+    "b_pprice_miss" = "MissInc",
+    "b_pp_cz" = "Czech",
+    "l_pprice_cz_de" = "Income_std_cz_de",
+    "b_pp_ei" = "Ireland"
+  ),
+  
+  draw_transformation = list(
+    "exp" = c("b_pprice","l_pprice", "b_pprice_miss", "b_pp_cz", "l_pprice_cz_de", "b_pp_ei") #if draws need be transformed. 
+  ),
   
   estimated_coef = estimated_vec, #all coefficients in the model. Should not included coefficient set to 0
   estimated_Sigma = robvarcov_mat, #(robust) covariance matrix
@@ -209,6 +238,7 @@ wtp <- apollo_WTP(
   R = 500,
   K = 10
 )
+
 
 wtp$wtp_mean
 hist(wtp$wtp_dist, breaks = 100)
