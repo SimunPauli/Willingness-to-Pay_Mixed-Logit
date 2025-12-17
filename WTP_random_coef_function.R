@@ -1,4 +1,3 @@
-
 library(MASS)
 library(doParallel)
 library(foreach)
@@ -14,7 +13,9 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
                 random_beta_uniform  = NULL,
                 interaction_beta = NULL,
                 
-                draw_transformation = NULL,
+                trans_param = NULL, #transform individual paramater after drawing. list("function1" = c("param_to_transform1"), "function2" = c("param_to_Transform2))
+                trans_alpha = NULL, #transform sum of alpha. character vector of function c("function","function2"). function1() will be applied before function2()
+                trans_beta = NULL,  #transform sum of beta character vector of function c("function","function2"). function1() will be applied before function2()
                 
                 estimated_coef = model$estimate[-which(names(model$estimate) %in% apollo_fixed)], #all coefficients in the model. Should not included coefficient set to 0
                 estimated_Sigma = model$robvarcov, #(robust) covariance matrix
@@ -46,7 +47,7 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
                          mu = estimated_coef, 
                          Sigma = estimated_Sigma)
   
-  if(!is.null(K)) draws_exp <- draws[rep(seq_len(R), each = K), , drop = FALSE] # (R*K) x p 
+  if(!is.null(K)) draws_exp <- draws[rep(seq_len(R), each = K), , drop = FALSE] # (R*K) x p. draws_exp only relevant if K exist 
   
   #extra draws for NORMAL random coefficient for ALPHA
   if (!is.null(random_alpha_normal)) {
@@ -60,10 +61,10 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
       mean_vec <- draws_exp[, coef_name]
       if (length(random_alpha_normal[[coef_name]]) == 2) { # checking for correlation coefficent (rho)
         rho_name <- random_alpha_normal[[coef_name]][2]
-        sigma_vec <- sigma_vec + draws_exp[, rho_name]
+        sigma_vec <- sqrt(sigma_vec^2 + (draws_exp[, rho_name])^2)
       }
       # sample individual-level random coefficients
-      new_vals <- rnorm(n = n_draws, mean = mean_vec, sd = abs(sigma_vec))
+      new_vals <- rnorm(n = n_draws, mean = mean_vec, sd = sigma_vec)
       draws_exp[, coef_name] <- new_vals
     }
     draws <- draws_exp
@@ -79,9 +80,9 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
       mean_vec <- draws_exp[, coef_name]
       if (length(random_beta_normal[[coef_name]]) == 2) { # checking for correlation coefficent (rho)
         rho_name <- random_beta_normal[[coef_name]][2]
-        sigma_vec <- sigma_vec + draws_exp[, rho_name]
+        sigma_vec <- sqrt(sigma_vec^2 + (draws_exp[, rho_name])^2)
       }
-      new_vals <- rnorm(n = n_draws, mean = mean_vec, sd = abs(sigma_vec))
+      new_vals <- rnorm(n = n_draws, mean = mean_vec, sd = sigma_vec)
       draws_exp[, coef_name] <- new_vals
     }
     draws <- draws_exp
@@ -122,15 +123,17 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
   }
   
   #Transform draws
-  if(!is.null(draw_transformation)) {
-    for(i in 1:length(draw_transformation)) {
-      trans_fun <- get(names(draw_transformation)[i])
-      for(j in 1:length(draw_transformation[[i]])) {
-        coef_name <- draw_transformation[[i]][j]
+  if(!is.null(trans_param)) {
+    for(i in 1:length(trans_param)) {
+      trans_fun <- get(names(trans_param)[i])
+      for(j in 1:length(trans_param[[i]])) {
+        coef_name <- trans_param[[i]][j]
         draws[, coef_name] <- trans_fun(draws[, coef_name])
       }
     }
   }
+
+
   
   if(!is.null(interaction_alpha) | !is.null(interaction_beta)) {
     # Convert to matrix for faster access
@@ -152,6 +155,15 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
     draws_alpha <- draws[, alpha_name]
     alpha_mat <- draws_alpha%*%t(X_alpha) # one individual across simulation on column, one simulation across individuals on rows
     
+    #Transform alpha_mat
+    if(!is.null(trans_alpha)) {
+      for(i in 1:length(trans_alpha)) {
+        trans_alpha_fun <- get(trans_alpha[i])
+        alpha_mat <- trans_alpha_fun(alpha_mat)
+      }
+    }
+    
+    
     # beta matrix
     X_beta <- matrix(
       1,
@@ -166,6 +178,14 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
     draws_beta <- draws[, beta_name]
     beta_mat <- draws_beta%*%t(X_beta) 
     
+    #Transform beta_mat
+    if(!is.null(trans_beta)) {
+      for(i in 1:length(trans_beta)) {
+        trans_beta_fun <- get(trans_beta[i])
+        beta_mat <- trans_beta_fun(beta_mat)
+      }
+    }
+    
     #compute wtp matrix
     wtp_mat <- alpha_mat / beta_mat
     
@@ -177,6 +197,14 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
     } else {
       alpha_vec <- draws_alpha
     }
+    #Transform alpha_vec
+    if(!is.null(trans_alpha)) {
+      for(i in 1:length(trans_alpha)) {
+        trans_alpha_fun <- get(trans_alpha[i])
+        alpha_vec <- trans_alpha_fun(alpha_vec)
+      }
+    }
+
     
     draws_beta <- draws[, beta_name]
     if(is.matrix(draws_beta)) {
@@ -184,7 +212,13 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
     } else {
       beta_vec <- draws_beta
     }
-    
+    #Transform beta_vec
+    if(!is.null(trans_beta)) {
+      for(i in 1:length(trans_beta)) {
+        trans_beta_fun <- get(trans_beta[i])
+        beta_vec <- trans_beta_fun(beta_vec)
+      }
+    }
     wtp_dist <- alpha_vec / beta_vec
   }
   
@@ -192,7 +226,7 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
   list(
     wtp_dist = function() wtp_dist_hidden,
     wtp_mean = mean(wtp_dist),
-    wtp_95_confidence = quantile(wtp_dist, c(0.025,0.975)) #95% confidence?
+    wtp_95_confidence = quantile(wtp_dist, c(0.025,0.975)) #95% simulation interval
   )
 }
 

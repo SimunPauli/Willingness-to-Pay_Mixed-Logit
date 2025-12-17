@@ -45,17 +45,19 @@ database$edu3 = 1*(database$edu > 4)
 
 database$Income_std_cz_de <-  database$Income_std*(database$Germany + database$Czech)
 
+
+set.seed(2025)
 wtp <- apollo_WTP(
-  alpha_name = c("b_accel"),
+  alpha_name = c("b_hdistch_phev"),
   beta_name = c("b_pprice"), 
   estimated_coef = estimated_vec, 
   estimated_Sigma = robvarcov_mat, 
   database = database,
-  R = 1000,
+  R = 2000,
   K = NULL
 )
-round(wtp$wtp_mean*1000)
-round(wtp$wtp_95_confidence*1000)
+wtp$wtp_mean
+wtp$wtp_95_confidence
 
 
 #wtp <- apollo_WTP(
