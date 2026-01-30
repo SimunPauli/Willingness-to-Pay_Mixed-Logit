@@ -40,7 +40,9 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
     if (!all(sigma_names %in% names(estimated_coef))) stop("Some sigma parameter names referenced in random_alpha_normal are not in estimated_coef.")
   }
   if(!is.numeric(K) & ((!is.null(random_alpha_normal)) | (!is.null(random_beta_normal))) ) stop("K needs to be numeric if WTP included random coefficient.")
-
+  if(length(names(interaction_alpha)) != length(unique(names(interaction_alpha)))) stop("Parameters in interaction_alpha should be unique.")
+  if(length(names(interaction_beta)) != length(unique(names(interaction_beta)))) stop("Parameters in interaction_beta should be unique.")
+  
   #### 2. Draw R multivariate normal draws for fixed (mean) coefficients ####
   n_draws <- R
   draws <- MASS::mvrnorm(n = n_draws,
@@ -134,8 +136,9 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
   }
 
 
-  
-  if(!is.null(interaction_alpha) | !is.null(interaction_beta)) {
+  alpha_mat <- NULL
+  beta_mat <- NULL
+  if(!is.null(interaction_alpha)) {
     # Convert to matrix for faster access
     database_indiv <- database[!duplicated(database$Respondent_Serial),] |> as.matrix()
     n_indiv <- nrow(database_indiv)
@@ -153,7 +156,7 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
       X_alpha[,param_name] <- database_indiv[, attri_name]
     }
     draws_alpha <- draws[, alpha_name]
-    alpha_mat <- draws_alpha%*%t(X_alpha) # one individual across simulation on column, one simulation across individuals on rows
+    alpha_mat <- draws_alpha%*%t(X_alpha) # column: one individual across simulation;  row: one simulation across individuals;
     
     #Transform alpha_mat
     if(!is.null(trans_alpha)) {
@@ -161,8 +164,27 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
         trans_alpha_fun <- get(trans_alpha[i])
         alpha_mat <- trans_alpha_fun(alpha_mat)
       }
+    } 
+  } else {
+    draws_alpha <- draws[, alpha_name]
+    if(is.matrix(draws_alpha)) { 
+      alpha_vec <- rowSums(draws_alpha)
+    } else {
+      alpha_vec <- draws_alpha
     }
-    
+    #Transform alpha_vec
+    if(!is.null(trans_alpha)) {
+      for(i in 1:length(trans_alpha)) {
+        trans_alpha_fun <- get(trans_alpha[i])
+        alpha_vec <- trans_alpha_fun(alpha_vec)
+      }
+    }
+  }
+  
+  
+  if(!is.null(interaction_beta)) {
+    database_indiv <- database[!duplicated(database$Respondent_Serial),] |> as.matrix()
+    n_indiv <- nrow(database_indiv)
     
     # beta matrix
     X_beta <- matrix(
@@ -186,26 +208,7 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
       }
     }
     
-    #compute wtp matrix
-    wtp_mat <- alpha_mat / beta_mat
-    
-    wtp_dist <- as.numeric(rowMeans(wtp_mat)) #means of wtp across simulation per individual
   } else {
-    draws_alpha <- draws[, alpha_name]
-    if(is.matrix(draws_alpha)) { 
-      alpha_vec <- rowSums(draws_alpha)
-    } else {
-      alpha_vec <- draws_alpha
-    }
-    #Transform alpha_vec
-    if(!is.null(trans_alpha)) {
-      for(i in 1:length(trans_alpha)) {
-        trans_alpha_fun <- get(trans_alpha[i])
-        alpha_vec <- trans_alpha_fun(alpha_vec)
-      }
-    }
-
-    
     draws_beta <- draws[, beta_name]
     if(is.matrix(draws_beta)) {
       beta_vec <- rowSums(draws_beta) 
@@ -219,15 +222,48 @@ apollo_WTP <- function(alpha_name, #all parameters to be included in the numerat
         beta_vec <- trans_beta_fun(beta_vec)
       }
     }
-    wtp_dist <- alpha_vec / beta_vec
   }
+  
+  
+  #calculate WTP matrix and take means of rows -> average from one simulation across individuals 
+  if(is.null(alpha_mat) & is.null(beta_mat))  {
+    wtp_dist <- alpha_vec / beta_vec
+  } else {
+    if(is.null(alpha_mat)) alpha_mat <- alpha_vec%*%t(matrix(1, n_indiv))
+    if(is.null(beta_mat)) beta_mat <- beta_vec%*%t(matrix(1, n_indiv))
+    wtp_mat <- alpha_mat / beta_mat
+    wtp_dist <- as.numeric(rowMeans(wtp_mat))
+    
+  }
+  
   
   wtp_dist_hidden <- structure(wtp_dist, class = "hidden_vector")
   list(
     wtp_dist = function() wtp_dist_hidden,
     wtp_mean = mean(wtp_dist),
+    wtp_median = median(wtp_dist),
     wtp_95_confidence = quantile(wtp_dist, c(0.025,0.975)) #95% simulation interval
   )
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
