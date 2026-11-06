@@ -1,6 +1,6 @@
 # Willingness-to-Pay for Mixed Logit Models
 
-Simulation-based estimation of willingness-to-pay (WTP) and its uncertainty for discrete choice models estimated with [Apollo](https://www.apollochoicemodelling.com/) in R. The tool handles WTP measures where the numerator and/or denominator include **random coefficients** (normal or uniform), **interactions with individual characteristics**, and **non-linear transformations** such as lognormal cost coefficients. Bootstraping is usually recommended, however it very computationally heavy while this Monte-Carlo simulation only takes seconds. 
+Simulation-based estimation of willingness-to-pay (WTP) and its uncertainty for discrete choice models estimated with [Apollo](https://www.apollochoicemodelling.com/) in R. The tool handles WTP measures where the numerator and/or denominator include **random coefficients** (normal or uniform), **interactions with individual characteristics**, and **non-linear transformations** such as lognormal cost coefficients. Bootstrap is usually recommended, however bootstrapping a complex mixed logit model is computationally heavy, while this Monte-Carlo simulation only takes seconds. 
 
 ## Motivation
 
